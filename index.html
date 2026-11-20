@@ -119,6 +119,14 @@ select { font: inherit; color: var(--ink); background: var(--surface); border: 1
 .ritem .a { font-size: 0.93rem; }
 .tag { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
 .tag.ok { background: var(--good-soft); color: var(--good); } .tag.ko { background: var(--bad-soft); color: var(--bad); }
+
+.study { border-color: var(--accent); }
+.stack { height: 10px; border-radius: 5px; background: var(--line); display: flex; overflow: hidden; }
+.stack i { display: block; height: 100%; }
+.legend b { color: var(--ink); font-weight: 600; margin-left: 3px; }
+.tag.new { background: var(--accent-soft); color: var(--accent); }
+details summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+ol.how { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: .9rem; max-width: 70ch; }
 @media (prefers-reduced-motion: no-preference) { .opt, .chip, .mode { transition: background-color .12s, border-color .12s; } }
 </style>
 
@@ -134,8 +142,10 @@ select { font: inherit; color: var(--ink); background: var(--surface); border: 1
     </div>
   </header>
 
+  <section id="study-card" class="panel study"></section>
   <main id="view-home" class="home"></main>
   <main id="view-quiz" class="panel" hidden></main>
+  <main id="view-study" class="panel" hidden></main>
   <main id="view-results" hidden></main>
 </div>
 
@@ -208,9 +218,10 @@ function pool() {
   if (setup.mode === 'err') p = p.filter(wrongLast);
   return p;
 }
-function show(v) { for (const n of ['home', 'quiz', 'results']) $('view-' + n).hidden = n !== v; window.scrollTo(0, 0); }
+function show(v) { for (const n of ['home', 'quiz', 'results', 'study']) $('view-' + n).hidden = n !== v; $('study-card').hidden = v !== 'home'; window.scrollTo(0, 0); }
 
-function renderHome() {
+function renderHome() { renderHomeBase(); renderStudyCard(); }
+function renderHomeBase() {
   const T = t(), p = pool(), nErr = D.questions.filter(wrongLast).length;
   $('subtitle').textContent = T.sub(D.questions.length);
   $('lang-it').setAttribute('aria-pressed', store.lang === 'it'); $('lang-en').setAttribute('aria-pressed', store.lang === 'en');
@@ -265,7 +276,7 @@ function begin() {
   if (setup.mode !== 'sim') p = shuffle(p);
   startSession(p, setup.mode === 'sim' ? 'sim' : 'prac', setup.mode === 'sim' && setup.timed);
 }
-function record(q, ok) { const s = store.stats[q.id] || { n: 0, ok: 0 }; s.n++; if (ok) s.ok++; s.last = ok; store.stats[q.id] = s; save(); }
+function record(q, ok) { const s = store.stats[q.id] || { n: 0, ok: 0 }; s.n++; if (ok) s.ok++; s.last = ok; store.stats[q.id] = s; srsUpdate(q, ok); save(); }
 
 function renderQuiz() {
   const T = t(), q = S.items[S.idx], c = q[store.lang], a = S.ans[S.idx], sim = S.mode === 'sim', locked = !sim && a !== null, last = S.idx === S.items.length - 1;
@@ -343,7 +354,7 @@ document.addEventListener('click', e => {
   else if (b.id === 'start') begin();
   else if (b.id === 'reset') { confirmReset = true; renderHome(); }
   else if (b.id === 'reset-no') { confirmReset = false; renderHome(); }
-  else if (b.id === 'reset-yes') { store.stats = {}; store.history = []; save(); confirmReset = false; renderHome(); }
+  else if (b.id === 'reset-yes') { store.stats = {}; store.history = []; store.srs = null; store.day = null; save(); confirmReset = false; renderHome(); }
   else if (b.dataset.l) answer(b.dataset.l);
   else if (b.dataset.go) go(+b.dataset.go);
   else if (b.id === 'prev') go(S.idx - 1);
@@ -367,6 +378,170 @@ document.addEventListener('keydown', e => {
     if (!sim && S.ans[S.idx] === null) return; e.preventDefault(); if (last) { if (k === 'enter') tryFinish(); } else go(S.idx + 1); }
   else if (k === 'arrowleft') go(S.idx - 1);
 });
+// ---------- Studio guidato (spaced repetition, Leitner) ----------
+const LS = {
+  it: {
+    title: 'Studio guidato', exam: n => n > 1 ? `Esame tra ${n} giorni · 24 novembre` : n === 1 ? 'Esame domani · 24 novembre' : n === 0 ? 'Esame oggi · 24 novembre' : 'Esame del 24 novembre passato',
+    m4: 'Padroneggiate', m23: 'In consolidamento', m1: 'Da correggere', m0: 'Mai viste',
+    today: (d, n) => `Oggi: <b>${d}</b> da ripassare · <b>${n}</b> nuove`,
+    start: 'Inizia lo studio di oggi', cont: 'Continua lo studio di oggi', doneToday: 'Per oggi hai finito. Domani ti ripropongo le domande da ripassare.',
+    extra: 'Fammi altre domande', how: 'Come funziona',
+    howList: ['Ogni giorno ricevi un blocco di domande nuove, dosato per vederle tutte entro il 23 novembre.',
+      'Se sbagli, la domanda torna dopo altre 3 domande, finché non la indovini. Poi la rivedi domani.',
+      'Se indovini, la rivedi dopo 1, poi 2, poi 3 giorni. Con 3 risposte giuste di fila è padroneggiata e torna solo il giorno prima dell’esame.',
+      'Anche gli errori fatti in Allenamento e nelle Simulazioni finiscono nel ripasso.'],
+    tagNew: 'Nuova', tagRev: 'Ripasso', tagFix: 'Da correggere', again: 'La rivedrai fra poche domande.', next: 'Avanti', quit: 'Torna alla home',
+    left: n => `${n} in questo giro`, roundDone: 'Giro completato', firstTry: (a, b) => `${a} su ${b} giuste al primo colpo`,
+    contN: n => `Continua (${n} rimaste per oggi)`, home: 'Torna alla home', allDone: 'Hai finito le domande di oggi. Ottimo lavoro.',
+    suggest: 'Se hai ancora tempo, fai una Simulazione d’esame da 30 domande a tempo.',
+  },
+  en: {
+    title: 'Guided study', exam: n => n > 1 ? `Exam in ${n} days · 24 November` : n === 1 ? 'Exam tomorrow · 24 November' : n === 0 ? 'Exam today · 24 November' : '24 November exam has passed',
+    m4: 'Mastered', m23: 'Consolidating', m1: 'To fix', m0: 'Never seen',
+    today: (d, n) => `Today: <b>${d}</b> to review · <b>${n}</b> new`,
+    start: 'Start today’s study', cont: 'Continue today’s study', doneToday: 'You are done for today. Tomorrow I will bring back the questions to review.',
+    extra: 'Give me more questions', how: 'How it works',
+    howList: ['Every day you get a batch of new questions, sized so you see them all by 23 November.',
+      'If you get one wrong, it comes back after 3 other questions, until you get it right. Then you see it again tomorrow.',
+      'If you get it right, you see it again after 1, then 2, then 3 days. Three right answers in a row and it is mastered: it only comes back the day before the exam.',
+      'Mistakes made in Practice and Exam simulations also go into the review.'],
+    tagNew: 'New', tagRev: 'Review', tagFix: 'To fix', again: 'You will see it again in a few questions.', next: 'Next', quit: 'Back to home',
+    left: n => `${n} in this round`, roundDone: 'Round complete', firstTry: (a, b) => `${a} of ${b} right at the first try`,
+    contN: n => `Continue (${n} left for today)`, home: 'Back to home', allDone: 'You have finished today’s questions. Great work.',
+    suggest: 'If you still have time, do a 30-question timed Exam simulation.',
+  }
+};
+const EXAM_DAY = (() => { const d = new Date(2026, 10, 24); return Math.floor((d.getTime() - d.getTimezoneOffset() * 60000) / 86400000); })();
+const todayNum = () => { const d = new Date(); return Math.floor((d.getTime() - d.getTimezoneOffset() * 60000) / 86400000); };
+const GAP = [0, 0, 1, 2, 3];
+const ROUND = 15, REQUEUE = 3;
+let ST = null;
+const ls = () => LS[store.lang];
+
+function srsInit() {
+  if (!store.srs) {
+    store.srs = {};
+    const td = todayNum();
+    for (const q of D.questions) { const s = store.stats[q.id]; if (s) store.srs[q.id] = { box: s.last ? 2 : 1, due: td, w: s.n - s.ok }; }
+    save();
+  }
+}
+function srsUpdate(q, ok) {
+  srsInit();
+  const td = todayNum(), cur = store.srs[q.id] || { box: 0, w: 0 };
+  const box = ok ? (cur.box === 0 ? 2 : Math.min(cur.box + 1, 4)) : 1;
+  let due = td + GAP[box];
+  if (ok) { if (td < EXAM_DAY - 1) due = Math.min(due, EXAM_DAY - 1); due = Math.max(due, td + 1); }
+  store.srs[q.id] = { box, due, w: (cur.w || 0) + (ok ? 0 : 1) };
+}
+function studyDay() {
+  const td = todayNum();
+  if (!store.day || store.day.d !== td) store.day = { d: td, newDone: 0 };
+  return store.day;
+}
+function studyPlan() {
+  srsInit();
+  const td = todayNum(), day = studyDay();
+  const unseen = D.questions.filter(q => !store.srs[q.id]).sort((a, b) => a.ch - b.ch || a.id - b.id);
+  const daysLeft = Math.max(1, EXAM_DAY - td);
+  const quota = td >= EXAM_DAY - 1 ? unseen.length + day.newDone : Math.ceil((unseen.length + day.newDone) / daysLeft);
+  const newLeft = Math.min(unseen.length, Math.max(0, quota - day.newDone));
+  const due = shuffle(D.questions.filter(q => store.srs[q.id] && store.srs[q.id].due <= td)).sort((a, b) => store.srs[a.id].box - store.srs[b.id].box);
+  return { due, fresh: unseen.slice(0, newLeft), unseen, td };
+}
+function counts() {
+  srsInit();
+  const c = { m4: 0, m23: 0, m1: 0, m0: 0 };
+  for (const q of D.questions) { const s = store.srs[q.id]; if (!s) c.m0++; else if (s.box >= 4) c.m4++; else if (s.box >= 2) c.m23++; else c.m1++; }
+  return c;
+}
+function renderStudyCard() {
+  const T = ls(), p = studyPlan(), c = counts(), N = D.questions.length, el = $('study-card');
+  const dleft = EXAM_DAY - p.td, todo = p.due.length + p.fresh.length;
+  const seg = (k, color) => c[k] ? `<i style="width:${c[k] / N * 100}%;background:var(${color})"></i>` : '';
+  el.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:baseline"><h2>${T.title}</h2><span class="label">${T.exam(dleft)}</span></div>
+    <div class="stack">${seg('m4', '--good')}${seg('m23', '--accent')}${seg('m1', '--bad')}</div>
+    <div class="legend"><span><i style="background:var(--good)"></i>${T.m4} <b class="num">${c.m4}</b></span><span><i style="background:var(--accent)"></i>${T.m23} <b class="num">${c.m23}</b></span><span><i style="background:var(--bad)"></i>${T.m1} <b class="num">${c.m1}</b></span><span><i style="background:var(--line)"></i>${T.m0} <b class="num">${c.m0}</b></span></div>
+    ${todo ? `<div>${T.today(p.due.length, p.fresh.length)}</div>
+      <div class="row"><button type="button" class="btn primary" id="st-start">${studyDay().newDone || ST ? T.cont : T.start}</button></div>`
+      : `<div class="muted">${T.doneToday}</div><div class="row"><button type="button" class="btn" id="st-extra">${T.extra}</button></div>`}
+    <details><summary>${T.how}</summary><ol class="how">${T.howList.map(x => `<li>${x}</li>`).join('')}</ol></details>`;
+}
+function studyRound(extra) {
+  const p = studyPlan();
+  let cards = [...p.due, ...p.fresh];
+  if (!cards.length && extra) {
+    const td = p.td;
+    cards = D.questions.filter(q => store.srs[q.id] && store.srs[q.id].due > td).sort((a, b) => store.srs[a.id].box - store.srs[b.id].box || store.srs[a.id].due - store.srs[b.id].due);
+    cards = [...cards, ...p.unseen];
+  }
+  cards = cards.slice(0, ROUND);
+  if (!cards.length) { show('home'); renderHome(); return; }
+  const fresh = new Set(p.fresh.map(q => q.id));
+  ST = { cards, kind: cards.map(q => !store.srs[q.id] ? 'new' : store.srs[q.id].box <= 1 ? 'fix' : 'rev'), perm: cards.map(q => shuffle(q.it.o.map((_, i) => i))),
+         i: 0, ans: null, first: new Map(), freshIds: fresh, extra: !!extra };
+  show('study'); renderStudy();
+}
+function renderStudy() {
+  const T = ls(), TT = t(), q = ST.cards[ST.i], c = q[store.lang], a = ST.ans, P = ST.perm[ST.i], kind = ST.kind[ST.i];
+  const opts = P.map((oi, j) => { const l = LET[oi]; let cls = '';
+    if (a) cls = l === q.a ? 'right' : l === a ? 'wrong' : '';
+    return `<button type="button" class="opt ${cls}" data-sl="${l}" ${a ? 'disabled' : ''}><span class="bubble">${LET[j]}</span><span>${fmt(c.o[oi])}</span></button>`; }).join('');
+  const disp = LET[P.indexOf(LET.indexOf(q.a))];
+  const tag = kind === 'new' ? `<span class="tag new">${T.tagNew}</span>` : kind === 'fix' ? `<span class="tag ko">${T.tagFix}</span>` : `<span class="tag ok">${T.tagRev}</span>`;
+  $('view-study').innerHTML = `
+    <div class="qhead"><span class="label">${tag} ${q.ch}. ${esc(D.chapters[q.ch - 1][store.lang])} · ${T.left(ST.cards.length - ST.i)}</span>
+      <button type="button" class="btn link" id="st-quit">${T.quit}</button></div>
+    <div class="qtext">${fmt(c.q)}</div>
+    <div class="opts">${opts}</div>
+    ${a ? `<div class="explain ${a === q.a ? 'ok' : 'ko'}"><b>${a === q.a ? TT.right : TT.wrong(disp)}</b> ${fmt(c.e)}${a === q.a ? '' : ` <i>${T.again}</i>`}</div>
+      <div class="nav"><span></span><button type="button" class="btn primary" id="st-next">${T.next}</button></div>` : ''}
+    <div class="muted" style="font-size:.8rem">${TT.keys}</div>`;
+  typeset($('view-study'));
+}
+function studyAnswer(l) {
+  if (!ST || ST.ans) return;
+  const q = ST.cards[ST.i], ok = l === q.a;
+  ST.ans = l;
+  if (!ST.first.has(q.id)) ST.first.set(q.id, ok);
+  if (ST.kind[ST.i] === 'new' && ST.freshIds.has(q.id)) { studyDay().newDone++; ST.freshIds.delete(q.id); }
+  record(q, ok);
+  if (!ok) {
+    const at = Math.min(ST.i + 1 + REQUEUE, ST.cards.length);
+    ST.cards.splice(at, 0, q); ST.kind.splice(at, 0, 'fix'); ST.perm.splice(at, 0, shuffle(q.it.o.map((_, i) => i)));
+  }
+  renderStudy();
+}
+function studyNext() {
+  if (!ST || !ST.ans) return;
+  ST.i++; ST.ans = null;
+  if (ST.i < ST.cards.length) { renderStudy(); window.scrollTo(0, 0); return; }
+  const T = ls(), firstOk = [...ST.first.values()].filter(Boolean).length, p = studyPlan(), left = p.due.length + p.fresh.length;
+  $('view-study').innerHTML = `
+    <span class="label">${T.roundDone}</span>
+    <div class="score"><div class="big num">${firstOk}<small>/${ST.first.size}</small></div><div class="muted">${T.firstTry(firstOk, ST.first.size)}</div></div>
+    ${left ? '' : `<div>${T.allDone}</div><div class="muted">${T.suggest}</div>`}
+    <div class="row">${left ? `<button type="button" class="btn primary" id="st-more">${T.contN(left)}</button>` : ''}<button type="button" class="btn" id="st-home">${T.home}</button></div>`;
+  ST = null; window.scrollTo(0, 0);
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.id === 'st-start' || b.id === 'st-more') studyRound(false);
+  else if (b.id === 'st-extra') studyRound(true);
+  else if (b.dataset.sl) studyAnswer(b.dataset.sl);
+  else if (b.id === 'st-next') studyNext();
+  else if (b.id === 'st-quit' || b.id === 'st-home') { ST = null; show('home'); renderHome(); }
+  else if ((b.id === 'lang-it' || b.id === 'lang-en') && ST && !$('view-study').hidden) renderStudy();
+});
+document.addEventListener('keydown', e => {
+  if ($('view-study').hidden || !ST || e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  let i = 'abcde'.indexOf(k); if (i < 0) i = '12345'.indexOf(k);
+  if (k.length === 1 && i >= 0 && !ST.ans && i < ST.perm[ST.i].length) { studyAnswer(LET[ST.perm[ST.i][i]]); e.preventDefault(); }
+  else if ((k === 'enter' || k === 'arrowright') && ST.ans) { e.preventDefault(); studyNext(); }
+});
+
 renderHome();
 </script>
 
