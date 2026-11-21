@@ -394,6 +394,8 @@ const LS = {
     left: n => `${n} in questo giro`, roundDone: 'Giro completato', firstTry: (a, b) => `${a} su ${b} giuste al primo colpo`,
     contN: n => `Continua (${n} rimaste per oggi)`, home: 'Torna alla home', allDone: 'Hai finito le domande di oggi. Ottimo lavoro.',
     suggest: 'Se hai ancora tempo, fai una Simulazione d’esame da 30 domande a tempo.',
+    topics: 'Argomenti', allT: 'Tutti (mescolati)', mixHint: 'Con «Tutti» le domande nuove arrivano mescolate da tutti i capitoli. Tocca uno o più capitoli per studiare solo quelli.',
+    todaySel: (d, n) => `In questi argomenti: <b>${d}</b> da ripassare · <b>${n}</b> nuove`, doneSel: 'In questi argomenti non c’è altro da fare per oggi. Scegli altri capitoli o chiedi altre domande.',
   },
   en: {
     title: 'Guided study', exam: n => n > 1 ? `Exam in ${n} days · 24 November` : n === 1 ? 'Exam tomorrow · 24 November' : n === 0 ? 'Exam today · 24 November' : '24 November exam has passed',
@@ -409,6 +411,8 @@ const LS = {
     left: n => `${n} in this round`, roundDone: 'Round complete', firstTry: (a, b) => `${a} of ${b} right at the first try`,
     contN: n => `Continue (${n} left for today)`, home: 'Back to home', allDone: 'You have finished today’s questions. Great work.',
     suggest: 'If you still have time, do a 30-question timed Exam simulation.',
+    topics: 'Topics', allT: 'All (mixed)', mixHint: 'With “All”, new questions come mixed from every chapter. Tap one or more chapters to study only those.',
+    todaySel: (d, n) => `In these topics: <b>${d}</b> to review · <b>${n}</b> new`, doneSel: 'Nothing left in these topics for today. Pick other chapters or ask for more questions.',
   }
 };
 const EXAM_DAY = (() => { const d = new Date(2026, 10, 24); return Math.floor((d.getTime() - d.getTimezoneOffset() * 60000) / 86400000); })();
@@ -439,15 +443,25 @@ function studyDay() {
   if (!store.day || store.day.d !== td) store.day = { d: td, newDone: 0 };
   return store.day;
 }
+function interleave(qs) {
+  const by = {};
+  for (const q of qs) (by[q.ch] = by[q.ch] || []).push(q);
+  const lists = Object.keys(by).sort((a, b) => a - b).map(k => by[k].sort((a, b) => a.id - b.id));
+  const out = [];
+  for (let i = 0; out.length < qs.length; i++) for (const l of lists) if (i < l.length) out.push(l[i]);
+  return out;
+}
+const studySel = () => Array.isArray(store.studyCh) && store.studyCh.length && store.studyCh.length < D.chapters.length ? new Set(store.studyCh) : null;
 function studyPlan() {
   srsInit();
-  const td = todayNum(), day = studyDay();
-  const unseen = D.questions.filter(q => !store.srs[q.id]).sort((a, b) => a.ch - b.ch || a.id - b.id);
+  const td = todayNum(), day = studyDay(), sel = studySel(), inSel = q => !sel || sel.has(q.ch);
+  const unseenAll = D.questions.filter(q => !store.srs[q.id]);
   const daysLeft = Math.max(1, EXAM_DAY - td);
-  const quota = td >= EXAM_DAY - 1 ? unseen.length + day.newDone : Math.ceil((unseen.length + day.newDone) / daysLeft);
-  const newLeft = Math.min(unseen.length, Math.max(0, quota - day.newDone));
-  const due = shuffle(D.questions.filter(q => store.srs[q.id] && store.srs[q.id].due <= td)).sort((a, b) => store.srs[a.id].box - store.srs[b.id].box);
-  return { due, fresh: unseen.slice(0, newLeft), unseen, td };
+  const quota = td >= EXAM_DAY - 1 ? unseenAll.length + day.newDone : Math.ceil((unseenAll.length + day.newDone) / daysLeft);
+  const newLeft = Math.min(unseenAll.length, Math.max(0, quota - day.newDone));
+  const unseen = interleave(unseenAll.filter(inSel));
+  const due = shuffle(D.questions.filter(q => inSel(q) && store.srs[q.id] && store.srs[q.id].due <= td)).sort((a, b) => store.srs[a.id].box - store.srs[b.id].box);
+  return { due, fresh: sel ? unseen : unseen.slice(0, newLeft), unseen, td, sel, inSel };
 }
 function counts() {
   srsInit();
@@ -463,9 +477,14 @@ function renderStudyCard() {
     <div class="row" style="justify-content:space-between;align-items:baseline"><h2>${T.title}</h2><span class="label">${T.exam(dleft)}</span></div>
     <div class="stack">${seg('m4', '--good')}${seg('m23', '--accent')}${seg('m1', '--bad')}</div>
     <div class="legend"><span><i style="background:var(--good)"></i>${T.m4} <b class="num">${c.m4}</b></span><span><i style="background:var(--accent)"></i>${T.m23} <b class="num">${c.m23}</b></span><span><i style="background:var(--bad)"></i>${T.m1} <b class="num">${c.m1}</b></span><span><i style="background:var(--line)"></i>${T.m0} <b class="num">${c.m0}</b></span></div>
-    ${todo ? `<div>${T.today(p.due.length, p.fresh.length)}</div>
+    <div class="field"><span class="label">${T.topics}</span><div class="chips">
+      <button type="button" class="chip" data-stc="all" aria-pressed="${!p.sel}">${T.allT}</button>
+      ${D.chapters.map((ch, i) => { const qs = D.questions.filter(q => q.ch === i + 1), seen = qs.filter(q => store.srs[q.id]).length;
+        return `<button type="button" class="chip" data-stc="${i + 1}" aria-pressed="${!!p.sel && p.sel.has(i + 1)}">${i + 1}. ${esc(ch[store.lang])} <span class="num">${seen}/${qs.length}</span></button>`; }).join('')}
+    </div><span class="muted" style="font-size:.82rem">${T.mixHint}</span></div>
+    ${todo ? `<div>${p.sel ? T.todaySel(p.due.length, p.fresh.length) : T.today(p.due.length, p.fresh.length)}</div>
       <div class="row"><button type="button" class="btn primary" id="st-start">${studyDay().newDone || ST ? T.cont : T.start}</button></div>`
-      : `<div class="muted">${T.doneToday}</div><div class="row"><button type="button" class="btn" id="st-extra">${T.extra}</button></div>`}
+      : `<div class="muted">${p.sel ? T.doneSel : T.doneToday}</div><div class="row"><button type="button" class="btn" id="st-extra">${T.extra}</button></div>`}
     <details><summary>${T.how}</summary><ol class="how">${T.howList.map(x => `<li>${x}</li>`).join('')}</ol></details>`;
 }
 function studyRound(extra) {
@@ -473,7 +492,7 @@ function studyRound(extra) {
   let cards = [...p.due, ...p.fresh];
   if (!cards.length && extra) {
     const td = p.td;
-    cards = D.questions.filter(q => store.srs[q.id] && store.srs[q.id].due > td).sort((a, b) => store.srs[a.id].box - store.srs[b.id].box || store.srs[a.id].due - store.srs[b.id].due);
+    cards = D.questions.filter(q => p.inSel(q) && store.srs[q.id] && store.srs[q.id].due > td).sort((a, b) => store.srs[a.id].box - store.srs[b.id].box || store.srs[a.id].due - store.srs[b.id].due);
     cards = [...cards, ...p.unseen];
   }
   cards = cards.slice(0, ROUND);
@@ -527,7 +546,14 @@ function studyNext() {
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
-  if (b.id === 'st-start' || b.id === 'st-more') studyRound(false);
+  if (b.dataset.stc) {
+    const all = D.chapters.map((_, i) => i + 1), c = b.dataset.stc, cur = studySel();
+    if (c === 'all') store.studyCh = null;
+    else { const n = +c, s = cur ? new Set(cur) : new Set(); if (!cur) s.add(n); else if (s.has(n)) s.delete(n); else s.add(n);
+      store.studyCh = s.size && s.size < all.length ? [...s].sort((a, b) => a - b) : null; }
+    save(); renderStudyCard();
+  }
+  else if (b.id === 'st-start' || b.id === 'st-more') studyRound(false);
   else if (b.id === 'st-extra') studyRound(true);
   else if (b.dataset.sl) studyAnswer(b.dataset.sl);
   else if (b.id === 'st-next') studyNext();
